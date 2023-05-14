@@ -48,9 +48,13 @@ start = time()
 # Define the classifer using the TextClassificationPipeline and DistilBERT model that is finetuned on the SST-2 dataset
 # Hyperparameters of the model:
 # model: "distilbert-base-uncased-finetuned-sst-2-english"
+# num layers: 6
+# num hidden layers: 768
+# num heads: 12
+# num parameters: 66M
 # num_workers: 8 - When the pipeline will use DataLoader (when passing a dataset, on GPU for a Pytorch model), the number of workers to be used.
 # batch_size: 32
-# learning_rate: 5e-5 (0.00005)
+# learning_rate: 1e-5 (0.00001)
 # warmup: 600 -> steps
 # max_seq_length: 128
 # num_train_epochs: 3.0
