@@ -11,11 +11,6 @@ from nltk.tokenize import word_tokenize
 from nltk.stem import WordNetLemmatizer
 from nltk.tag import pos_tag
 
-from geopy.geocoders import Nominatim
-from geopy.exc import GeocoderTimedOut
-from geopy.extra.rate_limiter import RateLimiter
-
-
 from datetime import datetime
 import csv
 import pandas as pd
@@ -23,19 +18,31 @@ import string
 import os
 import re
 
+"""
+PySpark Pipeline
+
+This code preprocess raw tweets dataset to be used for LDA analysis. 
+The code basically cleans up emojis, urls, mentions, stopwords and other texts that are not needed for LDA analysis.
+Then, texts are lowercased, lemmatized to boost the quality of analysis.
+The code also try to match user-defined location to actual location for later use of plotting sentiment statistics on world map.
+"""
+
 # initialize Spark confs
 conf = SparkConf()
 sc = SparkSession.builder.getOrCreate()
 
-# download missing nltk files
-# nltk.download('wordnet')
-# nltk.download('stopwords')
-# nltk.download('punkt')
-# nltk.download('averaged_perceptron_tagger')
+# download missing nltk files before cleaning text
+nltk.download('wordnet')
+nltk.download('stopwords')
+nltk.download('punkt')
+nltk.download('averaged_perceptron_tagger')
 
+# load location csv
 location_df = pd.read_csv('geolocation_final.csv')
 location_rows = location_df.values.tolist()
 location_dict = {}
+
+# create location dictionary to use it for user-defined location matching
 print('\r Creating Location Dictionary...')
 for row in location_rows:
     row_state_code = str(row[3]).lower()
@@ -89,6 +96,7 @@ def preprocess_tweets(text):
     lemmatizer = WordNetLemmatizer()
     # Remove Stop words ex) a, the, his, her, etc..
     for word, tag in pos_tag(word_tokenize(intmd_result)):
+
         # lemmatize first
         if word not in stop_words: # comment this line if want only lemmatize
             pos = ''
@@ -102,6 +110,8 @@ def preprocess_tweets(text):
                 word = lemmatizer.lemmatize(word, pos)
             result.append(word)
     return result
+
+# check if any token in user-defined location matches to real location
 def match_location(location):
     location_info = ('','','','','')
     if location == None:
@@ -121,64 +131,9 @@ def match_location(location):
                             if len([x for x in location_info if x == '']) > len([x for x in loc_temp_cand if x == '']):
                                 location_info = loc_temp_cand
     return location_info
-# def word_match(word, text):
-#     pattern = r'([A-Za-z]'+word+'|'+word+'[A-Za-z]'+'|[A-Za-z]'+word+'[A-Za-z])'
-#     word_match = False
-#     if re.search(pattern, text) == False:
-#         word_match = True
-#     if word_match == True and word in text:
-#         return True
-#     else:
-#         return False
-# def match_location(location):
-#     city = state = country = lat = lon = ''
-#     # [0 ~ 2] "city_name", "city_latitude","city_longitude", 
-#     # [3 ~ 6] "state_code", "state_name","state_latitude","state_longitude",
-#     # [7 ~ 10] "country_code", "country_name","country_latitude","country_longitude"
-#     if location == None:
-#         return (city, state, country, lat, lon)
-#     location = location.lower().replace(".", "")
-#     for row in location_rows:
-#         row_city_name = row[0].lower()
-#         row_state_code = str(row[3]).lower()
-#         row_state_name = row[4].lower()
-#         row_country_code = str(row[7]).lower()
-#         row_country_name = row[8].lower()
-#         if row_city_name in location or row_state_code in location or row_state_name in location or row_country_code in location or row_country_name in location:
-#             if city == '' and word_match(row_city_name, location):
-#                 city = row[0]
-#                 lat = row[1] # city lat
-#                 lon = row[2] # city lon
-#                 state = row[4]
-#                 country = row[8]
-#                 break
-#             elif state == '' and (word_match(row_state_code, location) or word_match(row_state_name, location)):
-#                 state = row[4]
-#                 lat = row[5] # state lat
-#                 lon = row[6] # state lon
-#                 country = row[8]
-#             elif country == '' and (word_match(row_country_code, location) or word_match(row_country_name, location)):
-#                 country = row[8]
-#                 lat = row[9] # country lat
-#                 lon = row[10] # country lon
-#     return (city, state, country, lat, lon)
-# def get_country_state(location):
-#     # Geocoding tweet location data
-#     try:
-#         geolocator = Nominatim(user_agent="Tweet_Preprocessor")
-#         geo_data = geolocator.geocode(location, timeout=10)
-#         if geo_data:
-#             lat = geo_data.latitude
-#             lon = geo_data.longitude
-#             reverse = RateLimiter(geolocator.reverse, min_delay_seconds=1)
-#             address = reverse((geo_data.latitude, geo_data.longitude), timeout=10).raw['address']
-#             state = address.get('state', '')
-#             country = address.get('country', '')
-#             return (state, country,  lat, lon)
-#     except GeocoderTimedOut:
-#         return get_country_state(location)
     
 # Print iterations progress
+# customized function referring to https://stackoverflow.com/questions/3173320/text-progress-bar-in-terminal-with-block-characters/13685020
 def printProgressBar (iteration, total, filename, output_filename, prefix = '', suffix = '', decimals = 1, length = 100, fill = '█', printEnd = "\r"):
     """
     Call in a loop to create terminal progress bar
@@ -208,90 +163,109 @@ def json_format_check(text):
     except:
         return False
     
+# Compute the popularity score
+# indicates the popularity of the tweet
+def compute_popularity_score(retweets, favorites):
+    try:
+        retweets = int(retweets)
+        favorites = int(favorites)
+        return retweets + favorites
+    except:
+        return 0
+    
+# Compute the reach score
+# indicates the number of potential viewers of the tweet
+def compute_reach_score(followings, followers):
+    try:
+        followers = int(followers)
+        followings = int(followings)
+        reach_score = followers - followings
+        if reach_score < 0:
+            reach_score = 0
+        return reach_score
+    except:
+        return 0
+    
 directory = './UkraineTweets/'
-output_directory = './preprocessed_by_country/'
-indexed_output_directory ='./preprocessed_by_country_indexed/'
-output_filename = ''
+output_directory = './preprocessed/'
+indexed_output_directory ='./preprocessed_indexed/'
 indexed_output_filename = ''
-filename_format = 'UkraineTweetsPreprocessedByCountry_NoStopWords'
+filename_format = 'UkraineTweetsPreprocessedForLDA_'
 # iterate over files in the directory
-total = sum([len(files) for r, d, files in os.walk(directory)])
+total = sum([len(files) for root, dirs, files in os.walk(directory)])
 count = 0
 total_country_tweets = 0
+output_row_dict = {}
+output_by_country_row_dict = {}
 for root, dirs, files in os.walk(directory):
+
     # Check the date of the tweets created,
     # and create output filename based on year and month
+    year_month_check = ''
     for filename in files:
+        output_row_num = 1
+        output_by_country_row_num = 1
+        output_filename = ''
+        output_by_country_filename = ''
         tweet_by_country = {}
         with open(directory + filename, newline='', encoding='UTF-8') as f:
             reader = csv.reader(f)
-            next(reader)
-            row = next(reader)
-            date = row[10][:19]
-            dt = datetime.strptime(date, '%Y-%m-%d %H:%M:%S')
-            year_month = dt.strftime('%Y-%m')
-            output_filename_date_format = year_month + '.csv'
-            indexed_output_filename_date_format = year_month+'_indexed' + '.csv'
-        count += 1
-        # progress bar to check the task progress.
-        printProgressBar(count, total, filename=os.path.join(directory + filename), output_filename = 'by Country')
-
-        # preprocess files
-        df = sc.read.csv(directory + filename, header=True, inferSchema=True)
-        filtered_df = df.select('location','tweetcreatedts','text','hashtags').where((df.language=='en'))
-        filtered_df = filtered_df.rdd.filter(lambda rec: json_format_check(rec[3]) == True).map(lambda rec: (match_location(rec[0]), rec[1], preprocess_tweets(rec[2]), [hashtag_info['text'] for hashtag_info in json.loads(rec[3].replace("\'", "\""))]))
-        preprocessed_output = filtered_df.filter(lambda rec: len([x for x in rec[0] if x == '']) < 5).collect()
-        total_country_tweets += len(preprocessed_output)
-        for tweet in preprocessed_output:
-            country = tweet[0][2]
-            if country not in tweet_by_country:
-                tweet_by_country[country] = [tweet]
+            header = next(reader)
+            column_index = header.index('tweetcreatedts')
+            dt = ''
+            while(dt == ''):
+                try:
+                    row = next(reader)
+                    date = row[column_index].split('.')[0]
+                    dt = datetime.strptime(date, '%Y-%m-%d %H:%M:%S')
+                except StopIteration:
+                    break
+                except:
+                    pass
+            if dt == '':
+                print(root +'/'+filename, '<=== Failed')
             else:
-                tweet_by_country[country].append(tweet)
-        for country in tweet_by_country.keys():
-            country_directory = output_directory + country + '/'
-            output_filename = country_directory + filename_format + country + output_filename_date_format
-            # indexed_output_filename = indexed_output_directory + filename_format + country + indexed_output_filename_date_format
-            if not os.path.exists(country_directory):
-                os.makedirs(country_directory)
+                year_month = dt.strftime('%Y_%m')
+                output_filename_date_format = year_month + '.csv'
+                output_by_country_filename_date_format = 'by_country_' +year_month + '.csv'
+                output_filename = output_directory + filename_format + output_filename_date_format
+                output_by_country_filename = output_directory + filename_format + output_by_country_filename_date_format
+                if year_month not in output_row_dict:
+                    output_row_dict[year_month] = 1
+                if year_month not in output_by_country_row_dict:
+                    output_by_country_row_dict[year_month] = 1
+                output_row_num = output_row_dict[year_month]
+                output_by_country_row_num = output_by_country_row_dict[year_month]
+        if output_filename != '':
+            count += 1
+
+            # progress bar to check the task progress.
+            printProgressBar(count, total, filename=os.path.join(directory + filename), output_filename = output_filename)
+
+            # preprocess files with PySpark
+            df = sc.read.csv(directory + filename, header=True, inferSchema=True)
+            filtered_df = df.select('location','tweetcreatedts','text','hashtags','following','followers','totaltweets','retweetcount','favorite_count').where((df.language=='en'))
+            filtered_df = filtered_df.rdd.filter(lambda rec: json_format_check(rec[3]) == True).map(lambda rec: match_location(rec[0]) + (rec[1], preprocess_tweets(rec[2]), [hashtag_info['text'] for hashtag_info in json.loads(rec[3].replace("\'", "\""))], rec[4], rec[5], rec[6], rec[7], rec[8], compute_reach_score(rec[4], rec[5]),compute_popularity_score(rec[7], rec[8])))
+            preprocessed_output = filtered_df.collect()
             with open(output_filename, 'a', newline='', encoding='UTF-8') as f:
                 writer = csv.writer(f)
-                writer.writerows(tweet_by_country[country])
-        # # preprocessed file appended to the matching year and month output file.
-print('total country tweets:', total_country_tweets)
-# below code adds row number for the preprocessed file
-# total = sum([len(files) for r, d, files in os.walk(output_directory)])
-# count = 0
-# for root, dirs, files in os.walk(output_directory):
-#     for filename in files:
-#         count += 1
-#         printProgressBar(count, total, filename=os.path.join(filename), output_filename = output_filename)
-#         with open(output_directory + filename, 'r', newline='', encoding='UTF-8') as f_in:
-#             reader = csv.reader(f_in)
-#             with open(indexed_output_directory + filename, 'w', newline='', encoding='UTF-8') as f_out:
-#                 writer = csv.writer(f_out)
-#                 for i, row in enumerate(reader, start=1):
-#                     new_row = [i] + row
-#                     writer.writerow(new_row)
-
-# total = sum([len(files) for r, d, files in os.walk(output_directory)])
-# count = 0
-# for root, dirs, files in os.walk(output_directory):
-#     with open(indexed_output_directory + 'UkraineTweetsPreprocessed2022-2023.csv', 'w', newline='', encoding='UTF-8') as f_out:
-#         writer = csv.writer(f_out)
-#         for filename in files:
-#             count += 1
-#             printProgressBar(count, total, filename=os.path.join(filename), output_filename = indexed_output_directory + 'UkraineTweetsPreprocessed2022-2023.csv')
-#             with open(output_directory + filename, 'r', newline='', encoding='UTF-8') as f_in:
-#                 reader = csv.reader(f_in)
-#                 for i, row in enumerate(reader, start=1):
-#                     writer.writerow(row)
-# df = sc.read.csv('./UkraineTweets/0829_UkraineCombinedTweetsDeduped.csv', header=True, inferSchema=True)
-# filtered_df = df.where((df.language=='en'))
-# rows = filtered_df.collect()
-# for row in rows:
-#     un = row["username"]
-#     ht = row['hashtags']
-#     print(row)
-#     print("\n")
-#     json_load(ht.replace("\'", "\""))
+                if os.path.getsize(output_filename) == 0:
+                    header = ['id','city', 'state', 'country', 'lat','lon','date', 'text','hashtags','following','followers','total_tweets','retweet_count','favorite_count', 'reach_score', 'popularity_score']
+                    writer.writerow(header)
+                for row in preprocessed_output:
+                        new_row = (output_row_num,) + row
+                        writer.writerow(new_row)
+                        output_row_num += 1
+            output_row_dict[year_month] = output_row_num
+            #ANCHOR This is to create preprocessed tweets by country. (Tweets with undefined location will be eliminated)
+            preprocessed_output = filtered_df.filter(lambda rec: rec[4] != '' and rec[5] != '').collect()
+            with open(output_by_country_filename, 'a', newline='', encoding='UTF-8') as f:
+                writer = csv.writer(f)
+                if os.path.getsize(output_by_country_filename) == 0:
+                    header = ['id','city', 'state', 'country', 'lat','lon','date', 'text','hashtags','following','followers','total_tweets','retweet_count','favorite_count', 'reach_score', 'popularity_score']
+                    writer.writerow(header)
+                for row in preprocessed_output:
+                        new_row = (output_by_country_row_num,) + row
+                        writer.writerow(new_row)
+                        output_by_country_row_num += 1
+            output_by_country_row_dict[year_month] = output_by_country_row_num
